@@ -34,7 +34,8 @@ module Make
     let memtag = C.variant Variant.MemTag
     let is_deps = C.variant Variant.Deps
     let kvm = C.variant Variant.Kvm
-    let is_exp = C.variant Variant.Exp
+    let af_independant = true
+    let db_independant = true
 
 (* Barrier pretty print *)
     let barriers =
@@ -245,7 +246,15 @@ module Make
           AArch64.AF
 
       and test_and_set_db =
-        test_and_set_bit (fun v -> M.op1 Op.DB v >>= is_zero) AArch64.DB
+        test_and_set_bit (bit_is_zero Op.DB) AArch64.DB
+
+      and full_test_and_set_db =
+        test_and_set_bit
+          (fun v ->
+            m_op Op.And
+              (bit_is_not_zero Op.Valid v)
+              (m_op Op.And (bit_is_zero Op.DB v) (bit_is_not_zero Op.DBM v)))
+          AArch64.DB
 
       let mextract_pte_vals pte_v =
         (extract_oa pte_v >>|
@@ -326,14 +335,14 @@ module Make
            (* >>== is important, as the test and set below
               is performed 'on the side ' *)
           let m_db =
-            if hd && dir = Dir.W then
+            if not db_independant && hd && dir = Dir.W then
               is_zero pte_v.db_v >>= fun c ->
               M.choiceT c
                 (test_and_set_db a_pte ii)
                 (M.unitT ())
             else M.unitT ()
           and m_af =
-            if is_exp && tthm && ha then
+            if not af_independant && tthm && ha then
               is_zero pte_v.af_v >>= fun c ->
               M.choiceT c
                 (test_and_set_af a_pte ii)
@@ -352,11 +361,16 @@ module Make
           M.delay_kont "3"
             begin
               let get_a_pte = ma >>= fun _ -> M.op1 Op.PTELoc a_virt
-              and test_and_set_af a_pte =
-                if not is_exp && tthm && ha then
+              and m_af a_pte =
+                if af_independant && tthm && ha then
                   test_and_set_af a_pte ii >>! a_pte
-                else M.unitT a_pte in
-              (get_a_pte >>== test_and_set_af) >>= fun a_pte ->
+                else M.unitT a_pte
+              and m_db a_pte =
+                if db_independant && hd && dir = Dir.W then
+                  full_test_and_set_db a_pte ii
+                else M.unitT () in
+              (get_a_pte >>==
+              (fun a_pte -> m_af a_pte >>| m_db a_pte)) >>= fun (a_pte,_) ->
               mextract_whole_pte_val an AArch64.nexp_annot a_pte ii >>= fun pte_v ->
               (mextract_pte_vals pte_v) >>= fun pte_v -> M.unitT (pte_v,a_pte)
             end
