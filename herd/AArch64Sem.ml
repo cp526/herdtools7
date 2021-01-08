@@ -34,6 +34,7 @@ module Make
     let memtag = C.variant Variant.MemTag
     let is_deps = C.variant Variant.Deps
     let kvm = C.variant Variant.Kvm
+    let is_exp = C.variant Variant.Exp
 
 (* Barrier pretty print *)
     let barriers =
@@ -324,13 +325,22 @@ module Make
           m >>== fun pte_v ->
            (* >>== is important, as the test and set below
               is performed 'on the side ' *)
-            begin if hd && dir = Dir.W then
+          let m_db =
+            if hd && dir = Dir.W then
               is_zero pte_v.db_v >>= fun c ->
               M.choiceT c
-                  (test_and_set_db a_pte ii)
-                  (M.unitT ())
+                (test_and_set_db a_pte ii)
+                (M.unitT ())
             else M.unitT ()
-            end >>| M.unitT pte_v.oa_v >>= fun (_,oa) -> M.unitT oa in
+          and m_af =
+            if is_exp && tthm && ha then
+              is_zero pte_v.af_v >>= fun c ->
+              M.choiceT c
+                (test_and_set_af a_pte ii)
+                (M.unitT ())
+            else M.unitT () in
+          begin m_db >>| m_af end
+          >>| M.unitT pte_v.oa_v >>= fun (_,oa) -> M.unitT oa in
         let mfault m _a = mfault (get_oa m) a_virt
         and mok a_pte m a = mok (setbits_get_oa a_pte m) a in
 
@@ -343,7 +353,7 @@ module Make
             begin
               let get_a_pte = ma >>= fun _ -> M.op1 Op.PTELoc a_virt
               and test_and_set_af a_pte =
-                if tthm && ha then
+                if not is_exp && tthm && ha then
                   test_and_set_af a_pte ii >>! a_pte
                 else M.unitT a_pte in
               (get_a_pte >>== test_and_set_af) >>= fun a_pte ->
